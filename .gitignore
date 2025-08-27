@@ -1,1 +1,12 @@
+# 虚拟环境
+.venv/
+# Python 缓存
 __pycache__/
+*.pyc
+# Jupyter
+.ipynb_checkpoints/
+# VSCode
+.vscode/
+# 输出结果
+*.log
+
