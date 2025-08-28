@@ -18,4 +18,12 @@
 
 ```bash
 pip install -r requirements.txt
+pip install -e .
+python examples/run_absorption_only.py
 
+## 2025-08-28
+- feat: S1 Step1 吸收-only CPU 内核（simulate_absorption_only）
+- test: 能量守恒单测（absorption-only）通过
+- demo: examples/run_absorption_only.py 输出 R_d≈0, A≈1
+- build: 可编辑安装（pyproject.toml, pip install -e .）
+- docs: 统一包名 biooptics，目录结构稳定
