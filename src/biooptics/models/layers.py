@@ -29,5 +29,33 @@ class LayerStack:
        
 
     def get_boundary_distance(self, z: float, uz: float, idx: int) -> float:
-        """计算当前位置到最近边界的距离"""
-        raise NotImplementedError
+        """
+        计算当前位置到最近层界的距离（沿当前方向的步长 s_b）。
+        约定：uz>0 向下撞下边界；uz<0 向上撞上边界；uz=0 则永不撞界（返回 inf）。
+        """
+
+
+        esp = 1e-12
+        if abs(uz) < esp:
+            return np.inf
+        
+        #当前层的上下边界
+        z_top = 0.0 if idx == 0 else self.boundaries[idx - 1]
+        z_bot = self.boundaries[idx]
+
+        if uz > 0.0:
+            #向下：目标是下边界
+            if np.isinf(z_bot):
+                return np.inf
+        
+            s = (z_bot - z)/uz
+
+        else:
+            #向上：目标是上边界
+            s = (z - z_top)/(-uz)
+
+        # 数值稳健：不允许返回负步长
+        if s < 0.0 and s > -1e-9:
+            s =  0.0
+        
+        return s if s >= 0.0 else np.inf 
