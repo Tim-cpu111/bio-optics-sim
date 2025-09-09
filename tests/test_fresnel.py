@@ -1,9 +1,14 @@
 import pytest
 import numpy as np
 from biooptics.mc.kernels_cpu import snell_refract, fresnel_unpolarized, handle_boundary
-from numpy import sin, cos, deg2rad
-from biooptics.mc.kernels_cpu import fresnel_unpolarized
+from numpy import  deg2rad
+"""
+tests/test_fresnel.py
 
+测试 Fresnel 与 Snell 两个底层函数:
+- 几何正确性: 折射、全反射是否符合 Snell 定律。
+- 数值正确性: Fresnel 反射率在正入射极限与范围 [0,1] 内。
+"""
 
 def test_snell_refraction_geometry_non_tir():
     # 空气->组织：n1 < n2，选一个中等入射角，必非 TIR
@@ -30,6 +35,7 @@ def test_snell_refraction_geometry_non_tir():
     assert u_trans[2] > 0.0
 
 def test_snell_tir_condition():
+    """验证超过临界角时，snell_refract 返回 tir=True 且无折射向量。"""
     n1, n2 = 1.5, 1.0
     theta_c = np.arcsin(n2/n1) #~0.7297 rad
     theta_i = theta_c + deg2rad(5.0)
@@ -48,21 +54,14 @@ def test_snell_tir_condition():
     # cos_i 应为 |u_z|
     assert pytest.approx(cos_i, rel=1e-12) == abs(uz)
 
-def test_fresnel_normal_incidence_limit():
-     with pytest.raises(ImportError):
-        fresnel_unpolarized(1.0, 1.5, 1.0, 1.0)
 
-
-def test_energy_split_decision_statistical():
-    dummy_photon = object()
-    dummy_stack = object()
-    rng = np.random.default_rng()
-    with pytest.raises(ImportError):
-        handle_boundary(dummy_photon, dummy_stack, rng)
 
 
 
 def test_fresnel_normal_incidence_limit():
+    
+    """验证法向入射时 Fresnel 反射率退化为 (n1-n2)^2/(n1+n2)^2。"""
+
     n1, n2 = 1.0, 1.37
     cos_i = 1.0
     cos_t = 1.0

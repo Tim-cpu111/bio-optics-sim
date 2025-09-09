@@ -354,13 +354,22 @@ def snell_refract(
     n2: float
 ) -> Tuple[bool, Optional[np.ndarray], float, Optional[float]]:
     """
-    Snell + TIR 判定 + 折射方向向量
-    约定：层法向取 +z，函数内部按“使 cos(theta_i)>0”的法向进行几何计算。
+    计算光子在界面折射/全反射的方向。
+
+    参数:
+        u_incident : ndarray, 入射方向 (单位向量)
+        n1, n2     : float, 入射/透射介质折射率
+
     返回:
-      - tir: 是否全反射
-      - u_trans: 折射方向（单位向量）；TIR 时为 None
-      - cos_i: 入射角余弦 (= |u_z|)
-      - cos_t: 折射角余弦；TIR 时为 None
+        tir   : bool, 是否发生全反射
+        u_trans: ndarray|None, 折射方向向量 (单位化); TIR 时为 None
+        cos_i : float, 入射角余弦 = |uz|
+        cos_t : float|None, 折射角余弦; TIR 时为 None
+
+    关键点:
+    - 用 Snell 定律 n1*sinθi = n2*sinθt 判定 TIR。
+    - 折射向量用向量公式计算: t = ηu + (ηcosθi - cosθt)N。
+    - 返回结果保证能量几何一致，且向量单位化。
     """
     u = np.asarray(u_incident, dtype=float)
     # 单位化，避免外部传入的向量有误差
@@ -402,11 +411,20 @@ def snell_refract(
 
 def fresnel_unpolarized(n1: float, n2: float, cos_i: float, cos_t: float) -> float:
     """
-    无偏振 Fresnel 反射率
-    输入: n1, n2 - 入射/透射介质折射率
-         cos_i  - 入射角余弦 (>=0)
-         cos_t  - 折射角余弦 (>=0)
-    返回: R in [0,1]
+    计算无偏振光的 Fresnel 反射率。
+
+    参数:
+        n1, n2 : float, 入射/透射介质折射率
+        cos_i  : float, 入射角余弦
+        cos_t  : float, 折射角余弦
+
+    返回:
+        R : float, 反射率 (0~1)
+
+    关键点:
+    - Rs, Rp 分别为 s/p 偏振的反射率。
+    - R = (Rs + Rp) / 2。
+    - 数值稳健: 避免除零，结果限制在 [0,1]。
     """
     # 避免除零
     denom_s = (n1 * cos_i + n2 * cos_t)
@@ -423,5 +441,163 @@ def fresnel_unpolarized(n1: float, n2: float, cos_i: float, cos_t: float) -> flo
     return float(min(max(R, 0.0), 1.0))
 
 
-def handle_boundary(photon, stack, rng) -> Literal["reflected","transmitted","exit_top","exit_bottom"]:
-    raise ImportError
+def handle_boundary(photon, stack, rng, tallies) -> Literal["reflected","transmitted","exit_top","exit_bottom"]:
+    #初始化
+    n_out = 1.0 # 初始化外界空气
+    ux, uy, uz = photon["ux"], photon["uy"], photon["uz"]
+    layer_idx = photon["layer_idx"]
+
+    """1. 根据 uz 判定光子撞到上界还是下界：
+       - uz > 0  → 下边界，候选层 j = i + 1
+       - uz < 0  → 上边界，候选层 j = i - 1"""
+    if uz >= 0:
+        layer_idx_next = layer_idx + 1
+    elif uz < 0:
+        layer_idx_next = layer_idx - 1
+
+    """    2. 获取当前层折射率 n1 与目标介质折射率 n2：
+       - 若 j 在 [0, L-1] → n2 = stack.layers[j].n
+       - 若 j < 0 → 上方外界（空气），n2 = 1.0
+       - 若 j >= L → 下方外界，n2 = 1.0"""
+    L = stack.len_layer()
+    n1 = stack.layers[layer_idx].n
+    
+
+    if layer_idx_next >= 0 and layer_idx_next <= L-1:
+        n2 = stack.layers[layer_idx_next].n
+    else:
+        n2 = n_out
+
+    """
+     3. 调用 snell_refract(u, n1, n2)：
+       - 若返回 TIR=True → 进行镜面反射 (uz 取反)，layer_idx 不变，返回 "reflected"
+       - 否则得到 cos_i, cos_t, 折射方向 u_trans"""
+    u_incident = np.array([ux,uy,uz], dtype= float)
+    tir, u_trans, cos_i, cos_t = snell_refract(u_incident, n1, n2)
+    print(photon["layer_idx"])
+    if tir == True:
+        photon["uz"] = -uz
+        norm = float(np.sqrt(photon["ux"]**2 + photon["uy"]**2 + photon["uz"]**2))
+        photon["ux"] /= norm
+        photon["uy"] /= norm
+        photon["uz"] /= norm
+        # 可选：把 z 往反射后方向推进一个很小步长
+        #photon["layer_idx"] = int(layer_idx)
+        photon["z"] += np.sign(photon["uz"]) * 1e-12
+
+        return "reflected"
+    
+    else:
+        R = fresnel_unpolarized(n1, n2, cos_i, cos_t)
+        xi = rng.random()
+        if xi < R:
+            #反射
+            photon["uz"] = -uz
+            norm = float(np.sqrt(photon["ux"]**2 + photon["uy"]**2 + photon["uz"]**2))
+            photon["ux"] /= norm
+            photon["uy"] /= norm
+            photon["uz"] /= norm
+            # 可选：把 z 往反射后方向推进一个很小步长
+            #photon["layer_idx"] = int(layer_idx_next)
+            photon["z"] += np.sign(photon["uz"]) * 1e-12
+            return "reflected"
+        else:
+            #透射
+            ux_t, uy_t, uz_t = float(u_trans[0]), float(u_trans[1]), float(u_trans[2])
+            norm_t = float(np.sqrt(ux_t**2 + uy_t**2 + uz_t**2))
+            if norm_t > 0.0:
+                ux_t, uy_t, uz_t = ux_t / norm_t, uy_t / norm_t, uz_t / norm_t
+
+            # 判断目标是否是内部层（0 <= j < L）还是外界（j<0 顶部 / j>=L 底部）
+            if 0 <= layer_idx_next < L:
+                # ---------- 透射进入相邻“内部层” ----------
+                photon["ux"] = ux_t
+                photon["uy"] = uy_t
+                photon["uz"] = uz_t
+                photon["layer_idx"] = int(layer_idx_next)
+                # 把 z 轻推入新层内部，避免下一步又被判在界面
+                photon["z"] += np.sign(uz_t) * 1e-12
+                return "transmitted"
+            else:
+                
+                # ---------- 透射进入“外界” → 出射并记账 ----------
+                if uz > 0:  # 原本向下撞“下边界”，越界则为底部出射
+                    if tallies is not None:
+                        tallies.T_d += float(photon["w"])
+                    photon["alive"] = 0
+                    return "exit_bottom"
+                else:       # 原本向上撞“上边界”，越界则为顶部出射
+                    if tallies is not None:
+                        tallies.R_d += float(photon["w"])
+                    photon["alive"] = 0
+                    return "exit_top"
+
+    """
+    处理光子在层间界面发生的事件。
+    本函数整合 Snell 定律、Fresnel 反射率与全反射 (TIR) 判定，
+    决定光子在界面处是反射、透射，还是从顶层/底层出射。
+
+    输入参数
+    --------
+    photon : PhotonRecord
+        光子的当前状态，至少包含:
+          - ux, uy, uz : 光子方向向量（近似单位向量）
+          - z          : 光子当前位置 z（调用时应在界面处）
+          - layer_idx  : 当前所在层索引（0 开始）
+          - w          : 光子权重（本函数不拆分权重）
+          - alive      : 布尔标志，表示光子是否仍在传播
+          
+    stack : LayerStack
+        多层组织数据结构，至少提供：
+          - layers[i].n   : 第 i 层的折射率
+          - boundaries    : 累计厚度数组（用于判定界面）
+    rng : 随机数发生器
+        提供 .random() 方法，返回 [0,1) 的浮点数，用于伯努利采样。
+    tallies : 可选
+        统计量对象，若提供则更新：
+          - tallies.R_d   : 顶面反射出射的累积能量
+          - tallies.T_d   : 底面透射出射的累积能量
+
+    返回值
+    ------
+    outcome : 字符串
+        表示光子在界面的事件结果，可能取：
+          - "reflected"   : 在界面反射（含全反射）
+          - "transmitted": 成功透射到相邻层
+          - "exit_top"    : 从顶面出射
+          - "exit_bottom" : 从底面出射
+
+    算法步骤
+    --------
+    1. 根据 uz 判定光子撞到上界还是下界：
+       - uz > 0  → 下边界，候选层 j = i + 1
+       - uz < 0  → 上边界，候选层 j = i - 1
+    2. 获取当前层折射率 n1 与目标介质折射率 n2：
+       - 若 j 在 [0, L-1] → n2 = stack.layers[j].n
+       - 若 j < 0 → 上方外界（空气），n2 = 1.0
+       - 若 j >= L → 下方外界，n2 = 1.0
+    3. 调用 snell_refract(u, n1, n2)：
+       - 若返回 TIR=True → 进行镜面反射 (uz 取反)，layer_idx 不变，返回 "reflected"
+       - 否则得到 cos_i, cos_t, 折射方向 u_trans
+    4. Fresnel 决策：
+       - 计算 R = fresnel_unpolarized(n1, n2, cos_i, cos_t)
+       - 抽取随机数 ξ = rng.random()
+       - 若 ξ < R → 反射（镜面对称），返回 "reflected"
+       - 否则 → 透射：
+         * 若目标是外界：
+             - 上方：更新 tallies.R_d += photon.w，photon.alive=False，返回 "exit_top"
+             - 下方：更新 tallies.T_d += photon.w，photon.alive=False，返回 "exit_bottom"
+         * 若目标是内部层：
+             - photon.u = u_trans（单位化）
+             - photon.layer_idx = j
+             - photon.z 沿新 uz 微小推进 (±1e-12)，避免浮点数误判
+             - 返回 "transmitted"
+
+    数值注意事项
+    ------------
+    - 反射时只需翻转 uz 分量 (ux, uy 不变)。
+    - 每次更新方向后建议归一化向量。
+    - 出射时不改变 photon.w（不分裂权重）。
+    - tallies 为空时需判空，避免报错。
+    """    
+    

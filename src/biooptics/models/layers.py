@@ -27,6 +27,8 @@ class LayerStack:
         # 如果超出所有边界，默认最后一层
         return len(self.layers) - 1
        
+    def len_layer(self):
+        return len(self.layers)
 
     def get_boundary_distance(self, z: float, uz: float, idx: int) -> float:
         """

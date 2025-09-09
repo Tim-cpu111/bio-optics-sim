@@ -36,3 +36,8 @@ source .venv/Scripts/activate
 - feat: Tallies 打点，支持步长/uz/轨迹采集
 - test: g=0 各向同性散射验证, 能量守恒验证
 - demo: examples/visualize_s1.py, 四合一可视化图
+## v0.1.0-S1 (2025-09-01)
+- 完成 S1：半无限均匀介质（CPU）
+  - 吸收-only、HG 散射、边界 Fresnel、RR
+  - Tallies 与四合一可视化
+- 能量守恒：R_d + A ≈ 1（统计误差随 N 收敛）
