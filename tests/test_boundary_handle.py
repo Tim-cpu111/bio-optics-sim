@@ -168,16 +168,35 @@ def test_handle_boundary_transmit_and_layer_change():
 
 
 
+
 class RNGHigh:
-    """固定返回大数，保证透射分支被选中。"""
+    """固定返回大数，保证 xi > R，从而选择透射分支。"""
     def random(self):
         return 0.99
 
 
-def _make_photon_at_top_exit(theta_deg=5.0, w=1.0):
-    """放在顶面 z=0，方向朝上（uz<0），小角度避免TIR。"""
+def _make_stack_top_exit():
+    """顶面出射：上方为空气（外界），用两层，顶层有限厚即可。"""
+    layers = [
+        Layer(mu_a=0.1, mu_s=1.0, g=0.9, n=1.37, d=0.5),     # layer0
+        Layer(mu_a=0.2, mu_s=2.0, g=0.8, n=1.40, d=np.inf), # layer1 半无限
+    ]
+    return LayerStack(layers)
+
+
+def _make_stack_bottom_exit():
+    """底面出射：最后一层设为有限厚，这样其下方就是外界。"""
+    layers = [
+        Layer(mu_a=0.1, mu_s=1.0, g=0.9, n=1.37, d=0.5),  # layer0
+        Layer(mu_a=0.2, mu_s=2.0, g=0.8, n=1.40, d=0.3),  # layer1 也有限厚
+    ]
+    return LayerStack(layers)
+
+
+def _make_photon_at_top(theta_deg=10.0, w=1.0):
+    """放在顶面 z=0，向上（uz<0），小角度，非 TIR。"""
     theta = np.deg2rad(theta_deg)
-    uz = -float(np.cos(theta))
+    uz = -float(np.cos(theta))   # 向上
     ux =  float(np.sin(theta))
     uy =  0.0
     p = np.zeros((), dtype=PhotonRecord)
@@ -187,14 +206,16 @@ def _make_photon_at_top_exit(theta_deg=5.0, w=1.0):
     return p
 
 
-def _make_photon_at_bottom_exit(stack, theta_deg=5.0, w=1.0):
-    """放在最底层的底界，方向朝下（uz>0），小角度避免TIR。"""
+def _make_photon_at_bottom(stack, theta_deg=10.0, w=1.0):
+    """放在最后一层的底面，向下（uz>0），小角度，非 TIR。"""
     theta = np.deg2rad(theta_deg)
-    uz =  float(np.cos(theta))
+    uz =  float(np.cos(theta))   # 向下
     ux =  float(np.sin(theta))
     uy =  0.0
-    z_bottom = float(np.sum([ly.d for ly in stack.layers]))  # 最底层底界
+    # 计算最底层底面的 z：= 所有层厚度之和
+    z_bottom = float(np.sum([ly.d for ly in stack.layers]))
     last_idx = len(stack.layers) - 1
+
     p = np.zeros((), dtype=PhotonRecord)
     p["x"]=0.0; p["y"]=0.0; p["z"]=z_bottom
     p["ux"]=ux; p["uy"]=uy; p["uz"]=uz
@@ -203,34 +224,32 @@ def _make_photon_at_bottom_exit(stack, theta_deg=5.0, w=1.0):
 
 
 def test_exit_tallies_top_bottom():
-    """验证光子出射时的 tally 与状态更新：
-    - 顶面：exit_top，R_d += w，photon.alive=0
-    - 底面：exit_bottom，T_d += w，photon.alive=0
+    """验证顶/底出射时的记账与终止：
+    - 顶面：outcome='exit_top' 且 R_d 增量≈w，photon.alive=0
+    - 底面：outcome='exit_bottom' 且 T_d 增量≈w，photon.alive=0
+    使用固定高随机数 RNG 强制走透射分支，避免 Fresnel 概率干扰。
     """
-    rng = RNGHigh()
-
     # 顶面出射
-    stack_top = _make_test_stack()
-    photon_top = _make_photon_at_top_exit(theta_deg=5.0, w=1.0)
+    stack_top = _make_stack_top_exit()
+    photon_top = _make_photon_at_top(theta_deg=10.0, w=1.0)
     tallies = SimpleNamespace(R_d=0.0, T_d=0.0)
+    rng_high = RNGHigh()
 
-    outcome_top = handle_boundary(photon_top, stack_top, rng, tallies=tallies)
+    outcome_top = handle_boundary(photon_top, stack_top, rng_high, tallies=tallies)
     assert outcome_top == "exit_top"
-    assert tallies.R_d == pytest.approx(1.0, rel=1e-12)
-    assert tallies.T_d == pytest.approx(0.0, rel=1e-12)
+    assert tallies.R_d == pytest.approx(1.0, rel=1e-12, abs=1e-12)
+    assert tallies.T_d == pytest.approx(0.0, rel=1e-12, abs=1e-12)
     assert photon_top["alive"] == 0
 
     # 底面出射
-    stack_bot = LayerStack([
-        Layer(mu_a=0.1, mu_s=1.0, g=0.9, n=1.37, d=0.5),
-        Layer(mu_a=0.2, mu_s=2.0, g=0.8, n=1.40, d=0.3),  # 有限厚，底界就是外界
-    ])
-    photon_bot = _make_photon_at_bottom_exit(stack_bot, theta_deg=5.0, w=1.0)
+    stack_bot = _make_stack_bottom_exit()
+    photon_bot = _make_photon_at_bottom(stack_bot, theta_deg=10.0, w=1.0)
+    # 重置 tally
     tallies.R_d = 0.0
     tallies.T_d = 0.0
 
-    outcome_bot = handle_boundary(photon_bot, stack_bot, rng, tallies=tallies)
+    outcome_bot = handle_boundary(photon_bot, stack_bot, rng_high, tallies=tallies)
     assert outcome_bot == "exit_bottom"
-    assert tallies.T_d == pytest.approx(1.0, rel=1e-12)
-    assert tallies.R_d == pytest.approx(0.0, rel=1e-12)
+    assert tallies.T_d == pytest.approx(1.0, rel=1e-12, abs=1e-12)
+    assert tallies.R_d == pytest.approx(0.0, rel=1e-12, abs=1e-12)
     assert photon_bot["alive"] == 0

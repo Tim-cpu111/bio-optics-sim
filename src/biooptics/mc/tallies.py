@@ -31,3 +31,12 @@ class Tallies:
         R_d = self.reflected / max(self.N, 1)
         A   = self.absorbed / max(self.N, 1)
         return R_d, A
+
+
+# --- S2 energy tally for small-run checks ---
+class EnergyTally:
+    def __init__(self, n_layers: int):
+        import numpy as np
+        self.R_d = 0.0  # 顶出射
+        self.T_d = 0.0  # 底出射
+        self.A_layers = np.zeros(int(n_layers), dtype=float)

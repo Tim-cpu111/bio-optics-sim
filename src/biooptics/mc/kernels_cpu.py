@@ -474,7 +474,7 @@ def handle_boundary(photon, stack, rng, tallies) -> Literal["reflected","transmi
        - 否则得到 cos_i, cos_t, 折射方向 u_trans"""
     u_incident = np.array([ux,uy,uz], dtype= float)
     tir, u_trans, cos_i, cos_t = snell_refract(u_incident, n1, n2)
-    print(photon["layer_idx"])
+
     if tir == True:
         photon["uz"] = -uz
         norm = float(np.sqrt(photon["ux"]**2 + photon["uy"]**2 + photon["uz"]**2))
