@@ -21,27 +21,36 @@ class SmallSimConfig:
     max_steps: int = 10_000
 
 def _sample_free_path(rng, mu_t: float) -> float:
-    # 指数分布：-ln(U)/mu_t（保护极小 U）
+    """指数分布步长采样"""
     return -math.log(max(1e-12, float(rng.random()))) / mu_t
 
-def run_small(layer_stack: LayerStack, cfg: SmallSimConfig):
+def run_small(layer_stack: LayerStack,
+              cfg: SmallSimConfig,
+              viz=None,
+              viz_first_photons: int = 50,
+              viz_step_stride: int = 3,
+              viz_max_points: int = 20000):
     """
-    返回: (R_d, T_d, A_layers)
-    - R_d: 顶面出射能量（含 Fresnel 决策）
-    - T_d: 底面出射能量
-    - A_layers: 每层吸收能量
+    多层蒙特卡罗小规模仿真：
+    返回 (R_d, T_d, A_layers)
+    - R_d: 顶出射能量
+    - T_d: 底出射能量
+    - A_layers: 每层吸收能量数组
+
+    可选 viz: 提供 log_step(s), log_uz(uz), log_pos(x,z) 接口的对象，用于采样可视化。
     """
     rng = np.random.default_rng(cfg.rng_seed)
     n_layers = len(layer_stack.layers)
     energy = EnergyTally(n_layers=n_layers)
 
-    for _ in range(cfg.n_photons):
-        # 初始化一个光子：位于顶面下方极近处，向下
+    total_points = 0
+
+    for p_idx in range(cfg.n_photons):
+        # 初始化光子：顶面下方极近处，向下
         p = np.zeros((), dtype=PhotonRecord)
-        p["x"] = 0.0; p["y"] = 0.0; p["z"] = np.float32(1e-7)
-        p["ux"] = 0.0; p["uy"] = 0.0; p["uz"] = 1.0
-        p["w"] = 1.0; p["alive"] = 1
-        p["layer_idx"] = 0
+        p["x"], p["y"], p["z"] = 0.0, 0.0, np.float32(1e-7)
+        p["ux"], p["uy"], p["uz"] = 0.0, 0.0, 1.0
+        p["w"], p["alive"], p["layer_idx"] = 1.0, 1, 0
 
         steps = 0
         while p["alive"] and steps < cfg.max_steps:
@@ -49,51 +58,46 @@ def run_small(layer_stack: LayerStack, cfg: SmallSimConfig):
             idx = int(p["layer_idx"])
             layer = layer_stack.layers[idx]
             mu_a, mu_s, g = float(layer.mu_a), float(layer.mu_s), float(layer.g)
-            # src/biooptics/simulation/run_small.py 中 while 循环里，计算 mu_t 后：
             mu_t = mu_a + mu_s
+
+            # 特殊情况：透明半无限层 → 直接逃逸
             if mu_t <= 0.0:
-                # 透明层特殊处理：如果是“最后一层 & 半无限 & 朝下”，认为直接逃逸到底部
-                is_last = (idx == len(layer_stack.layers) - 1)
+                is_last = (idx == n_layers - 1)
                 if is_last and np.isinf(layer.d) and float(p["uz"]) > 0.0:
                     energy.T_d += float(p["w"])
                     p["alive"] = 0
                     break
-                else:
-                    s_intrinsic = math.inf
+                s_intrinsic = math.inf
             else:
                 s_intrinsic = _sample_free_path(rng, mu_t)
 
-
-            # 查到边界的距离
+            # 到边界的距离
             s_boundary = layer_stack.get_boundary_distance(float(p["z"]), float(p["uz"]), idx)
 
-            # 谁先到？
-            hit_boundary_first = (s_boundary < s_intrinsic)
-
-            if hit_boundary_first:
-                # 先到边界：前进到界面
+            # 边界优先
+            if s_boundary < s_intrinsic:
                 p["x"] += p["ux"] * s_boundary
                 p["y"] += p["uy"] * s_boundary
                 p["z"] += p["uz"] * s_boundary
+                if viz and p_idx < viz_first_photons and steps % viz_step_stride == 0 and total_points < viz_max_points:
+                    viz.log_step(float(s_boundary)); viz.log_pos(float(p["x"]), float(p["z"]))
+                    total_points += 1
 
                 outcome = handle_boundary(p, layer_stack, rng, energy)
-                if outcome == "exit_top":
-                    # 已在 handle_boundary 里加过 energy.Rd
-                    break
-                elif outcome == "exit_bottom":
-                    # 已在 handle_boundary 里加过 energy.Td
+                if outcome in ("exit_top", "exit_bottom"):
                     break
                 else:
-                    # 反射或层内透射，继续循环
                     continue
 
-            # 否则：先发生体相互作用（前进到碰撞点）
-            s = s_intrinsic if np.isfinite(s_intrinsic) else 0.0
+            # 否则体相互作用
+            s = 0.0 if not np.isfinite(s_intrinsic) else float(s_intrinsic)
             p["x"] += p["ux"] * s
             p["y"] += p["uy"] * s
             p["z"] += p["uz"] * s
+            if viz and p_idx < viz_first_photons and steps % viz_step_stride == 0 and total_points < viz_max_points:
+                viz.log_step(s); viz.log_pos(float(p["x"]), float(p["z"]))
+                total_points += 1
 
-            # 吸收
             if mu_t > 0.0:
                 absorb = float(p["w"]) * (mu_a / mu_t)
                 p["w"] = float(p["w"]) - absorb
@@ -107,15 +111,16 @@ def run_small(layer_stack: LayerStack, cfg: SmallSimConfig):
                     p["alive"] = 0
                     break
 
-            # 散射（若 mu_s>0）
+            # 散射
             if mu_s > 0.0:
                 u1, u2 = float(rng.random()), float(rng.random())
                 cos_t = _sample_hg_cos_theta(g, u1)
-                phi = _sample_phi(u2)
+                phi   = _sample_phi(u2)
                 ux, uy, uz = _rotate_direction(float(p["ux"]), float(p["uy"]), float(p["uz"]), cos_t, phi)
                 p["ux"], p["uy"], p["uz"] = ux, uy, uz
-
-        # 光子生命终结：继续下一个
+                if viz and p_idx < viz_first_photons and steps % viz_step_stride == 0 and total_points < viz_max_points:
+                    viz.log_uz(float(p["uz"]))
+                    total_points += 1
 
     # 归一化
     scale = 1.0 / float(cfg.n_photons)
